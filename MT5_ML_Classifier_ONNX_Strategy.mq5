@@ -1,5 +1,5 @@
 #property strict
-#property version   "2.10"
+#property version   "2.20"
 #property description "EA MT5: clasificator ML antrenat in Python, exportat ONNX, rulat in Strategy Tester"
 #property description "Cu trend filter + kill switch"
 
@@ -37,6 +37,14 @@ input bool   InpKillSwitchFlatOnActivate      = true;  // InpKillSwitchFlatOnAct
 input long   InpMagic                 = 26042026;  // InpMagic: Magic number
 input bool   InpLog                   = false;     // InpLog: Log principal
 input bool   InpDebugLog              = false;     // InpDebugLog: Log la fiecare bara noua
+
+input bool   InpUseTrendDistanceFilter = true;   // InpUseTrendDistanceFilter: Cere distanta minima fata de EMA HTF
+input double InpTrendMinDistancePct    = 0.0010; // InpTrendMinDistancePct: Distanta minima fata de EMA (ex: 0.001 = 0.1%)
+
+input bool   InpUseAtrVolFilter        = true;   // InpUseAtrVolFilter: Activeaza filtru ATR
+input int    InpAtrVolLookback         = 50;     // InpAtrVolLookback: Numar bare pentru distributia ATR
+input double InpAtrMinPercentile       = 0.20;   // InpAtrMinPercentile: Prag minim ATR din distributie (0..1)
+input double InpAtrMaxPercentile       = 0.90;   // InpAtrMaxPercentile: Prag maxim ATR din distributie (0..1)
 
 const int FEATURE_COUNT = 10;
 const int CLASS_COUNT   = 3; // ordinea claselor: SELL, FLAT, BUY
@@ -126,6 +134,74 @@ double CalcATR(const MqlRates &rates[], int start_shift, int period)
    return sum_tr / period;
   }
 
+double GetPercentileFromArray(const double &arr[], int count, double q)
+  {
+   if(count <= 0)
+      return 0.0;
+
+   if(q <= 0.0)
+      q = 0.0;
+   if(q >= 1.0)
+      q = 1.0;
+
+   double tmp[];
+   ArrayResize(tmp, count);
+   for(int i = 0; i < count; i++)
+      tmp[i] = arr[i];
+
+   ArraySort(tmp);
+
+   double pos = q * (count - 1);
+   int lo = (int)MathFloor(pos);
+   int hi = (int)MathCeil(pos);
+
+   if(lo == hi)
+      return tmp[lo];
+
+   double w = pos - lo;
+   return tmp[lo] * (1.0 - w) + tmp[hi] * w;
+  }
+
+bool AtrVolatilityAllows(double current_atr14)
+  {
+   if(!InpUseAtrVolFilter)
+      return true;
+
+   MqlRates rates[];
+   ArraySetAsSeries(rates, true);
+
+   int need_bars = InpAtrVolLookback + 20;
+   if(CopyRates(_Symbol, _Period, 0, need_bars, rates) < need_bars)
+     {
+      if(InpLog)
+         Print("ATR volatility filter: nu sunt suficiente bare.");
+      return false;
+     }
+
+   double atr_values[];
+   ArrayResize(atr_values, InpAtrVolLookback);
+
+   int s = 1; // folosim doar bare inchise
+   for(int i = 0; i < InpAtrVolLookback; i++)
+     {
+      atr_values[i] = CalcATR(rates, s + i, 14);
+     }
+
+   double atr_min = GetPercentileFromArray(atr_values, InpAtrVolLookback, InpAtrMinPercentile);
+   double atr_max = GetPercentileFromArray(atr_values, InpAtrVolLookback, InpAtrMaxPercentile);
+
+   if(InpDebugLog && InpLog)
+      PrintFormat("ATR FILTER current=%.6f min=%.6f max=%.6f", current_atr14, atr_min, atr_max);
+
+   if(current_atr14 < atr_min)
+      return false;
+
+   if(current_atr14 > atr_max)
+      return false;
+
+   return true;
+  }
+  
 //------------------------------------------------------------
 // FEATURE ENGINEERING
 //------------------------------------------------------------
@@ -335,9 +411,18 @@ bool TrendAllows(SignalDirection signal)
    bool slope_up   = (ema_1 > ema_2);
    bool slope_down = (ema_1 < ema_2);
 
+   double distance_pct = 0.0;
+   if(ema_1 != 0.0)
+      distance_pct = MathAbs(htf_close_1 - ema_1) / ema_1;
+
    if(InpDebugLog && InpLog)
-      PrintFormat("TREND htf_close=%.5f ema1=%.5f ema2=%.5f slope_up=%d slope_down=%d",
-                  htf_close_1, ema_1, ema_2, slope_up, slope_down);
+      PrintFormat(
+         "TREND htf_close=%.5f ema1=%.5f ema2=%.5f slope_up=%d slope_down=%d distance_pct=%.6f",
+         htf_close_1, ema_1, ema_2, slope_up, slope_down, distance_pct
+      );
+
+   if(InpUseTrendDistanceFilter && distance_pct < InpTrendMinDistancePct)
+      return false;
 
    if(signal == SIGNAL_BUY)
      {
@@ -736,7 +821,15 @@ void OnTick()
 
    if(!PredictClassProbabilities(pSell, pFlat, pBuy, atr14))
       return;
-
+   
+   if(!AtrVolatilityAllows(atr14))
+     {
+      if(InpDebugLog && InpLog)
+         PrintFormat("ATR volatility filter blocked entry. atr14=%.6f", atr14);
+      ManageExistingPosition(SIGNAL_FLAT);
+      return;
+     }
+   
    SignalDirection raw_signal = SignalFromProbabilities(pSell, pFlat, pBuy);
    SignalDirection filtered_signal = raw_signal;
 
