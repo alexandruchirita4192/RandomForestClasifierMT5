@@ -1,6 +1,7 @@
 #property strict
-#property version   "2.00"
+#property version   "2.10"
 #property description "EA MT5: clasificator ML antrenat in Python, exportat ONNX, rulat in Strategy Tester"
+#property description "Cu trend filter + kill switch"
 
 #include <Trade/Trade.mqh>
 
@@ -9,19 +10,33 @@
 // 2) Recompileaza EA-ul dupa copiere.
 #resource "ml_strategy_classifier.onnx" as uchar ExtModel[]
 
-input double InpLots                  = 0.10;     // InpLots: Lot fix
-input double InpEntryProbThreshold    = 0.60;     // InpEntryProbThreshold: Prag minim pentru probabilitatea BUY/SELL
-input double InpMinProbGap            = 0.08;     // InpMinProbGap: Diferenta minima intre cea mai buna clasa si urmatoarea
-input bool   InpUseAtrStops           = true;     // InpUseAtrStops: Foloseste SL/TP pe baza ATR
-input double InpStopAtrMultiple       = 1.50;     // InpStopAtrMultiple: SL = ATR * multiplicator
-input double InpTakeAtrMultiple       = 2.00;     // InpTakeAtrMultiple: TP = ATR * multiplicator
-input int    InpMaxBarsInTrade        = 8;        // InpMaxBarsInTrade: Recomandat sa fie egal cu horizon_bars din Python
-input bool   InpCloseOnOppositeSignal = true;     // InpCloseOnOppositeSignal: Inchide pe semnal opus
-input bool   InpAllowLong             = true;     // InpAllowLong: Permite BUY
-input bool   InpAllowShort            = true;     // InpAllowShort: Permite SELL
-input long   InpMagic                 = 26042026; // InpMagic: Magic number
-input bool   InpLog                   = false;    // Log principal
-input bool   InpDebugLog              = false;    // Log la fiecare bara noua
+input double InpLots                  = 0.10;      // InpLots: Lot fix
+input double InpEntryProbThreshold    = 0.60;      // InpEntryProbThreshold: Prag minim pentru probabilitatea BUY/SELL
+input double InpMinProbGap            = 0.15;      // InpMinProbGap: Diferenta minima intre cea mai buna clasa si urmatoarea
+input bool   InpUseAtrStops           = true;      // InpUseAtrStops: Foloseste SL/TP pe baza ATR
+input double InpStopAtrMultiple       = 1.50;      // InpStopAtrMultiple: SL = ATR * multiplicator
+input double InpTakeAtrMultiple       = 2.00;      // InpTakeAtrMultiple: TP = ATR * multiplicator
+input int    InpMaxBarsInTrade        = 8;         // InpMaxBarsInTrade: Recomandat sa fie egal cu horizon_bars din Python
+input bool   InpCloseOnOppositeSignal = true;      // InpCloseOnOppositeSignal: Inchide pe semnal opus
+input bool   InpAllowLong             = true;      // InpAllowLong: Permite BUY
+input bool   InpAllowShort            = true;      // InpAllowShort: Permite SELL
+
+input bool   InpUseTrendFilter        = true;      // InpUseTrendFilter: Activeaza filtru de trend
+input ENUM_TIMEFRAMES InpTrendTF      = PERIOD_H1; // InpTrendTF: Timeframe trend
+input int    InpTrendMAPeriod         = 50;        // InpTrendMAPeriod: EMA period
+input bool   InpTrendRequireSlope     = true;      // InpTrendRequireSlope: EMA trebuie sa aiba si panta in directia semnalului
+
+input bool   InpUseKillSwitch                 = true;  // InpUseKillSwitch: Activeaza kill switch
+input int    InpKillSwitchLookbackTrades      = 8;     // InpKillSwitchLookbackTrades: Ultimele N trade-uri analizate
+input double InpKillSwitchMinWinRate          = 0.40;  // InpKillSwitchMinWinRate: Win rate minim acceptat
+input double InpKillSwitchMinProfitFactor     = 0.95;  // InpKillSwitchMinProfitFactor: Profit factor minim acceptat
+input int    InpKillSwitchConsecutiveLosses   = 4;     // InpKillSwitchConsecutiveLosses: Pierderi consecutive maxime
+input int    InpKillSwitchPauseBars           = 96;    // InpKillSwitchPauseBars: Pauza in bare dupa activare
+input bool   InpKillSwitchFlatOnActivate      = true;  // InpKillSwitchFlatOnActivate: Inchide pozitia curenta cand se activeaza
+
+input long   InpMagic                 = 26042026;  // InpMagic: Magic number
+input bool   InpLog                   = false;     // InpLog: Log principal
+input bool   InpDebugLog              = false;     // InpDebugLog: Log la fiecare bara noua
 
 const int FEATURE_COUNT = 10;
 const int CLASS_COUNT   = 3; // ordinea claselor: SELL, FLAT, BUY
@@ -31,8 +46,17 @@ const long EXT_PROBA_SHAPE[]  = {1, CLASS_COUNT};
 
 CTrade trade;
 long g_model_handle = INVALID_HANDLE;
+int  g_trend_ma_handle = INVALID_HANDLE;
+
 datetime g_last_bar_time = 0;
 int g_bars_in_trade = 0;
+
+// Kill switch state
+bool g_kill_switch_active = false;
+int  g_kill_switch_pause_remaining = 0;
+int  g_consecutive_losses = 0;
+double g_recent_closed_profits[];
+int g_last_history_deals_total = 0;
 
 enum SignalDirection
   {
@@ -41,6 +65,7 @@ enum SignalDirection
    SIGNAL_BUY  =  1
   };
 
+//------------------------------------------------------------
 
 bool IsNewBar()
   {
@@ -62,6 +87,7 @@ bool IsNewBar()
    return false;
   }
 
+//------------------------------------------------------------
 
 double Mean(const double &arr[], int start_shift, int count)
   {
@@ -70,7 +96,6 @@ double Mean(const double &arr[], int start_shift, int count)
       sum += arr[i];
    return sum / count;
   }
-
 
 double StdDev(const double &arr[], int start_shift, int count)
   {
@@ -83,7 +108,6 @@ double StdDev(const double &arr[], int start_shift, int count)
      }
    return MathSqrt(s / MathMax(count - 1, 1));
   }
-
 
 double CalcATR(const MqlRates &rates[], int start_shift, int period)
   {
@@ -101,6 +125,10 @@ double CalcATR(const MqlRates &rates[], int start_shift, int period)
      }
    return sum_tr / period;
   }
+
+//------------------------------------------------------------
+// FEATURE ENGINEERING
+//------------------------------------------------------------
 
 bool BuildFeatureVector(matrixf &features, double &atr14)
   {
@@ -162,8 +190,21 @@ bool BuildFeatureVector(matrixf &features, double &atr14)
    features[0][7] = (float)dist_sma_20;
    features[0][8] = (float)zscore_20;
    features[0][9] = (float)atr14;
+
+   if(InpDebugLog && InpLog)
+     {
+      PrintFormat(
+         "FEATURES ret1=%.8f ret3=%.8f ret5=%.8f ret10=%.8f vol10=%.8f vol20=%.8f dist10=%.8f dist20=%.8f z20=%.8f atr14=%.8f",
+         ret_1, ret_3, ret_5, ret_10, vol_10, vol_20, dist_sma_10, dist_sma_20, zscore_20, atr14
+      );
+     }
+
    return true;
   }
+
+//------------------------------------------------------------
+// ONNX
+//------------------------------------------------------------
 
 bool PredictClassProbabilities(double &pSell, double &pFlat, double &pBuy, double &atr14)
   {
@@ -172,7 +213,6 @@ bool PredictClassProbabilities(double &pSell, double &pFlat, double &pBuy, doubl
       return false;
 
    long predicted_label[1];
-
    matrixf probs;
    probs.Resize(1, CLASS_COUNT);
 
@@ -193,6 +233,10 @@ bool PredictClassProbabilities(double &pSell, double &pFlat, double &pBuy, doubl
 
    return true;
   }
+
+//------------------------------------------------------------
+// SIGNAL LOGIC
+//------------------------------------------------------------
 
 SignalDirection SignalFromProbabilities(double pSell, double pFlat, double pBuy)
   {
@@ -241,6 +285,84 @@ SignalDirection SignalFromProbabilities(double pSell, double pFlat, double pBuy)
    return SIGNAL_FLAT;
   }
 
+//------------------------------------------------------------
+// TREND FILTER
+//------------------------------------------------------------
+
+bool GetTrendFilterValues(double &htf_close_1, double &ema_1, double &ema_2)
+  {
+   if(!InpUseTrendFilter)
+      return true;
+
+   if(g_trend_ma_handle == INVALID_HANDLE)
+      return false;
+
+   htf_close_1 = iClose(_Symbol, InpTrendTF, 1);
+   if(htf_close_1 == 0.0)
+      return false;
+
+   double ema_buf[];
+   ArraySetAsSeries(ema_buf, true);
+
+   if(CopyBuffer(g_trend_ma_handle, 0, 1, 2, ema_buf) < 2)
+      return false;
+
+   ema_1 = ema_buf[0]; // EMA pe bara HTF inchisa curenta
+   ema_2 = ema_buf[1]; // EMA pe bara HTF inchisa anterioara
+
+   return true;
+  }
+
+bool TrendAllows(SignalDirection signal)
+  {
+   if(!InpUseTrendFilter)
+      return true;
+
+   if(signal == SIGNAL_FLAT)
+      return true;
+
+   double htf_close_1 = 0.0;
+   double ema_1 = 0.0;
+   double ema_2 = 0.0;
+
+   if(!GetTrendFilterValues(htf_close_1, ema_1, ema_2))
+     {
+      if(InpLog)
+         Print("Trend filter: nu pot citi datele HTF.");
+      return false;
+     }
+
+   bool slope_up   = (ema_1 > ema_2);
+   bool slope_down = (ema_1 < ema_2);
+
+   if(InpDebugLog && InpLog)
+      PrintFormat("TREND htf_close=%.5f ema1=%.5f ema2=%.5f slope_up=%d slope_down=%d",
+                  htf_close_1, ema_1, ema_2, slope_up, slope_down);
+
+   if(signal == SIGNAL_BUY)
+     {
+      if(htf_close_1 <= ema_1)
+         return false;
+      if(InpTrendRequireSlope && !slope_up)
+         return false;
+      return true;
+     }
+
+   if(signal == SIGNAL_SELL)
+     {
+      if(htf_close_1 >= ema_1)
+         return false;
+      if(InpTrendRequireSlope && !slope_down)
+         return false;
+      return true;
+     }
+
+   return true;
+  }
+
+//------------------------------------------------------------
+// POSITION HELPERS
+//------------------------------------------------------------
 
 bool HasOpenPosition(long &pos_type, double &pos_price)
   {
@@ -255,12 +377,181 @@ bool HasOpenPosition(long &pos_type, double &pos_price)
    return true;
   }
 
-
 void CloseOpenPosition()
   {
    if(PositionSelect(_Symbol) && (long)PositionGetInteger(POSITION_MAGIC) == InpMagic)
-      trade.PositionClose(_Symbol);
+     {
+      bool ok = trade.PositionClose(_Symbol);
+      if(!ok && InpLog)
+         PrintFormat("PositionClose failed. retcode=%d lastError=%d",
+                     trade.ResultRetcode(), GetLastError());
+     }
   }
+
+//------------------------------------------------------------
+// KILL SWITCH
+//------------------------------------------------------------
+
+void PushClosedTradeProfit(double value)
+  {
+   int size = ArraySize(g_recent_closed_profits);
+   ArrayResize(g_recent_closed_profits, size + 1);
+   g_recent_closed_profits[size] = value;
+
+   if(ArraySize(g_recent_closed_profits) > InpKillSwitchLookbackTrades)
+     {
+      for(int i = 1; i < ArraySize(g_recent_closed_profits); i++)
+         g_recent_closed_profits[i - 1] = g_recent_closed_profits[i];
+      ArrayResize(g_recent_closed_profits, InpKillSwitchLookbackTrades);
+     }
+  }
+
+void ActivateKillSwitch(string reason)
+  {
+   if(!InpUseKillSwitch)
+      return;
+
+   g_kill_switch_active = true;
+   g_kill_switch_pause_remaining = InpKillSwitchPauseBars;
+
+   if(InpLog)
+      PrintFormat("KILL SWITCH ACTIVATED: %s | pause_bars=%d", reason, g_kill_switch_pause_remaining);
+
+   if(InpKillSwitchFlatOnActivate)
+      CloseOpenPosition();
+  }
+
+void DecrementKillSwitchPause()
+  {
+   if(!g_kill_switch_active)
+      return;
+
+   if(g_kill_switch_pause_remaining > 0)
+     {
+      g_kill_switch_pause_remaining--;
+      if(InpDebugLog && InpLog)
+         PrintFormat("KillSwitch pause remaining: %d bars", g_kill_switch_pause_remaining);
+     }
+
+   if(g_kill_switch_pause_remaining <= 0)
+     {
+      g_kill_switch_active = false;
+      g_consecutive_losses = 0;
+      ArrayResize(g_recent_closed_profits, 0);
+
+      if(InpLog)
+         Print("KILL SWITCH DEACTIVATED.");
+     }
+  }
+
+void EvaluateKillSwitch()
+  {
+   if(!InpUseKillSwitch)
+      return;
+
+   if(g_kill_switch_active)
+      return;
+
+   if(g_consecutive_losses >= InpKillSwitchConsecutiveLosses)
+     {
+      ActivateKillSwitch(StringFormat("consecutive_losses=%d", g_consecutive_losses));
+      return;
+     }
+
+   int n = ArraySize(g_recent_closed_profits);
+   if(n < InpKillSwitchLookbackTrades)
+      return;
+
+   int wins = 0;
+   double gross_profit = 0.0;
+   double gross_loss_abs = 0.0;
+
+   for(int i = 0; i < n; i++)
+     {
+      double p = g_recent_closed_profits[i];
+      if(p > 0.0)
+        {
+         wins++;
+         gross_profit += p;
+        }
+      else if(p < 0.0)
+        {
+         gross_loss_abs += MathAbs(p);
+        }
+     }
+
+   double win_rate = (double)wins / (double)n;
+   double profit_factor = (gross_loss_abs > 0.0 ? gross_profit / gross_loss_abs : 999.0);
+
+   if(InpDebugLog && InpLog)
+      PrintFormat("KillSwitch stats: n=%d win_rate=%.3f profit_factor=%.3f consec_losses=%d",
+                  n, win_rate, profit_factor, g_consecutive_losses);
+
+   if(win_rate < InpKillSwitchMinWinRate)
+     {
+      ActivateKillSwitch(StringFormat("win_rate %.3f < %.3f", win_rate, InpKillSwitchMinWinRate));
+      return;
+     }
+
+   if(profit_factor < InpKillSwitchMinProfitFactor)
+     {
+      ActivateKillSwitch(StringFormat("profit_factor %.3f < %.3f", profit_factor, InpKillSwitchMinProfitFactor));
+      return;
+     }
+  }
+
+void UpdateClosedTradeStats()
+  {
+   if(!InpUseKillSwitch)
+      return;
+
+   if(!HistorySelect(0, TimeCurrent()))
+      return;
+
+   int total = HistoryDealsTotal();
+   if(total <= g_last_history_deals_total)
+      return;
+
+   for(int i = g_last_history_deals_total; i < total; i++)
+     {
+      ulong deal_ticket = HistoryDealGetTicket(i);
+      if(deal_ticket == 0)
+         continue;
+
+      string symbol = HistoryDealGetString(deal_ticket, DEAL_SYMBOL);
+      long magic    = HistoryDealGetInteger(deal_ticket, DEAL_MAGIC);
+      long entry    = HistoryDealGetInteger(deal_ticket, DEAL_ENTRY);
+
+      if(symbol != _Symbol)
+         continue;
+      if(magic != InpMagic)
+         continue;
+      if(entry != DEAL_ENTRY_OUT)
+         continue;
+
+      double profit     = HistoryDealGetDouble(deal_ticket, DEAL_PROFIT);
+      double swap       = HistoryDealGetDouble(deal_ticket, DEAL_SWAP);
+      double commission = HistoryDealGetDouble(deal_ticket, DEAL_COMMISSION);
+      double net = profit + swap + commission;
+
+      PushClosedTradeProfit(net);
+
+      if(net < 0.0)
+         g_consecutive_losses++;
+      else if(net > 0.0)
+         g_consecutive_losses = 0;
+
+      if(InpLog)
+         PrintFormat("Closed trade detected: net=%.2f consec_losses=%d", net, g_consecutive_losses);
+     }
+
+   g_last_history_deals_total = total;
+   EvaluateKillSwitch();
+  }
+
+//------------------------------------------------------------
+// ORDER EXECUTION
+//------------------------------------------------------------
 
 void OpenTrade(SignalDirection signal, double atr14)
   {
@@ -310,7 +601,6 @@ void OpenTrade(SignalDirection signal, double atr14)
      }
   }
 
-
 void ManageExistingPosition(SignalDirection signal)
   {
    long pos_type;
@@ -336,6 +626,9 @@ void ManageExistingPosition(SignalDirection signal)
       CloseOpenPosition();
   }
 
+//------------------------------------------------------------
+// INIT / DEINIT
+//------------------------------------------------------------
 
 int OnInit()
   {
@@ -376,9 +669,31 @@ int OnInit()
       return INIT_FAILED;
      }
 
+   if(InpUseTrendFilter)
+     {
+      g_trend_ma_handle = iMA(_Symbol, InpTrendTF, InpTrendMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+      if(g_trend_ma_handle == INVALID_HANDLE)
+        {
+         if(InpLog)
+            Print("Trend filter iMA handle failed. Error=", GetLastError());
+         OnnxRelease(g_model_handle);
+         g_model_handle = INVALID_HANDLE;
+         return INIT_FAILED;
+        }
+     }
+
+   if(HistorySelect(0, TimeCurrent()))
+      g_last_history_deals_total = HistoryDealsTotal();
+   else
+      g_last_history_deals_total = 0;
+
+   ArrayResize(g_recent_closed_profits, 0);
+   g_consecutive_losses = 0;
+   g_kill_switch_active = false;
+   g_kill_switch_pause_remaining = 0;
+
    return INIT_SUCCEEDED;
   }
-
 
 void OnDeinit(const int reason)
   {
@@ -387,13 +702,32 @@ void OnDeinit(const int reason)
       OnnxRelease(g_model_handle);
       g_model_handle = INVALID_HANDLE;
      }
+
+   if(g_trend_ma_handle != INVALID_HANDLE)
+     {
+      IndicatorRelease(g_trend_ma_handle);
+      g_trend_ma_handle = INVALID_HANDLE;
+     }
   }
 
+//------------------------------------------------------------
+// MAIN LOOP
+//------------------------------------------------------------
 
 void OnTick()
   {
    if(!IsNewBar())
       return;
+
+   UpdateClosedTradeStats();
+   DecrementKillSwitchPause();
+
+   if(g_kill_switch_active)
+     {
+      if(InpDebugLog && InpLog)
+         Print("KillSwitch active -> skip new entries.");
+      return;
+     }
 
    double pSell = 0.0;
    double pFlat = 0.0;
@@ -403,23 +737,27 @@ void OnTick()
    if(!PredictClassProbabilities(pSell, pFlat, pBuy, atr14))
       return;
 
-   SignalDirection signal = SignalFromProbabilities(pSell, pFlat, pBuy);
+   SignalDirection raw_signal = SignalFromProbabilities(pSell, pFlat, pBuy);
+   SignalDirection filtered_signal = raw_signal;
+
+   if(!TrendAllows(raw_signal))
+      filtered_signal = SIGNAL_FLAT;
 
    if(InpDebugLog && InpLog)
      {
       PrintFormat(
-         "Probabilities sell=%.4f flat=%.4f buy=%.4f entry_prob=%.4f min_gap=%.4f signal=%d atr14=%.5f",
-         pSell, pFlat, pBuy, InpEntryProbThreshold, InpMinProbGap, signal, atr14
+         "Probabilities sell=%.4f flat=%.4f buy=%.4f entry_prob=%.4f min_gap=%.4f raw_signal=%d filtered_signal=%d atr14=%.5f",
+         pSell, pFlat, pBuy, InpEntryProbThreshold, InpMinProbGap, raw_signal, filtered_signal, atr14
       );
      }
 
-   ManageExistingPosition(signal);
+   ManageExistingPosition(filtered_signal);
 
    long pos_type;
    double pos_price;
    if(HasOpenPosition(pos_type, pos_price))
       return;
 
-   if(signal == SIGNAL_BUY || signal == SIGNAL_SELL)
-      OpenTrade(signal, atr14);
+   if(filtered_signal == SIGNAL_BUY || filtered_signal == SIGNAL_SELL)
+      OpenTrade(filtered_signal, atr14);
   }
