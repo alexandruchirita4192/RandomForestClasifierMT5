@@ -9,17 +9,17 @@
 // 2) Recompileaza EA-ul dupa copiere.
 #resource "ml_strategy_classifier.onnx" as uchar ExtModel[]
 
-input double InpLots                  = 0.10;     // Lot fix
-input double InpEntryProbThreshold    = 0.60;     // Prag minim pentru probabilitatea BUY/SELL
-input double InpMinProbGap            = 0.08;     // Diferenta minima intre cea mai buna clasa si urmatoarea
-input bool   InpUseAtrStops           = true;     // Foloseste SL/TP pe baza ATR
-input double InpStopAtrMultiple       = 1.50;     // SL = ATR * multiplicator
-input double InpTakeAtrMultiple       = 2.00;     // TP = ATR * multiplicator
-input int    InpMaxBarsInTrade        = 8;        // Recomandat sa fie egal cu horizon_bars din Python
-input bool   InpCloseOnOppositeSignal = true;     // Inchide pe semnal opus
-input bool   InpAllowLong             = true;     // Permite BUY
-input bool   InpAllowShort            = true;     // Permite SELL
-input long   InpMagic                 = 26042026; // Magic number
+input double InpLots                  = 0.10;     // InpLots: Lot fix
+input double InpEntryProbThreshold    = 0.60;     // InpEntryProbThreshold: Prag minim pentru probabilitatea BUY/SELL
+input double InpMinProbGap            = 0.08;     // InpMinProbGap: Diferenta minima intre cea mai buna clasa si urmatoarea
+input bool   InpUseAtrStops           = true;     // InpUseAtrStops: Foloseste SL/TP pe baza ATR
+input double InpStopAtrMultiple       = 1.50;     // InpStopAtrMultiple: SL = ATR * multiplicator
+input double InpTakeAtrMultiple       = 2.00;     // InpTakeAtrMultiple: TP = ATR * multiplicator
+input int    InpMaxBarsInTrade        = 8;        // InpMaxBarsInTrade: Recomandat sa fie egal cu horizon_bars din Python
+input bool   InpCloseOnOppositeSignal = true;     // InpCloseOnOppositeSignal: Inchide pe semnal opus
+input bool   InpAllowLong             = true;     // InpAllowLong: Permite BUY
+input bool   InpAllowShort            = true;     // InpAllowShort: Permite SELL
+input long   InpMagic                 = 26042026; // InpMagic: Magic number
 input bool   InpLog                   = false;    // Log principal
 input bool   InpDebugLog              = false;    // Log la fiecare bara noua
 
@@ -102,7 +102,6 @@ double CalcATR(const MqlRates &rates[], int start_shift, int period)
    return sum_tr / period;
   }
 
-
 bool BuildFeatureVector(matrixf &features, double &atr14)
   {
    MqlRates rates[];
@@ -166,30 +165,34 @@ bool BuildFeatureVector(matrixf &features, double &atr14)
    return true;
   }
 
-
 bool PredictClassProbabilities(double &pSell, double &pFlat, double &pBuy, double &atr14)
   {
    matrixf x;
    if(!BuildFeatureVector(x, atr14))
       return false;
 
-   vectorf labels(1);
+   long predicted_label[1];
+
    matrixf probs;
    probs.Resize(1, CLASS_COUNT);
 
-   if(!OnnxRun(g_model_handle, ONNX_NO_CONVERSION, x, labels, probs))
+   if(!OnnxRun(g_model_handle, 0, x, predicted_label, probs))
      {
       if(InpLog)
          Print("OnnxRun failed. Error=", GetLastError());
       return false;
      }
 
-   pSell = (double)probs[0][0];
-   pFlat = (double)probs[0][1];
-   pBuy  = (double)probs[0][2];
+   pSell = probs[0][0];
+   pFlat = probs[0][1];
+   pBuy  = probs[0][2];
+
+   if(InpDebugLog && InpLog)
+      PrintFormat("RAW ONNX label=%d probs: sell=%.6f flat=%.6f buy=%.6f",
+                  predicted_label[0], pSell, pFlat, pBuy);
+
    return true;
   }
-
 
 SignalDirection SignalFromProbabilities(double pSell, double pFlat, double pBuy)
   {
@@ -259,7 +262,6 @@ void CloseOpenPosition()
       trade.PositionClose(_Symbol);
   }
 
-
 void OpenTrade(SignalDirection signal, double atr14)
   {
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -276,6 +278,8 @@ void OpenTrade(SignalDirection signal, double atr14)
    trade.SetExpertMagicNumber(InpMagic);
    trade.SetDeviationInPoints(20);
 
+   bool ok = false;
+
    if(signal == SIGNAL_BUY)
      {
       if(InpUseAtrStops)
@@ -283,8 +287,12 @@ void OpenTrade(SignalDirection signal, double atr14)
          sl = ask - sl_dist;
          tp = ask + tp_dist;
         }
-      if(trade.Buy(InpLots, _Symbol, ask, sl, tp, "ML class buy"))
+      ok = trade.Buy(InpLots, _Symbol, ask, sl, tp, "ML class buy");
+      if(ok)
          g_bars_in_trade = 0;
+      else if(InpLog)
+         PrintFormat("BUY failed. retcode=%d lastError=%d ask=%.5f sl=%.5f tp=%.5f",
+                     trade.ResultRetcode(), GetLastError(), ask, sl, tp);
      }
    else if(signal == SIGNAL_SELL)
      {
@@ -293,8 +301,12 @@ void OpenTrade(SignalDirection signal, double atr14)
          sl = bid + sl_dist;
          tp = bid - tp_dist;
         }
-      if(trade.Sell(InpLots, _Symbol, bid, sl, tp, "ML class sell"))
+      ok = trade.Sell(InpLots, _Symbol, bid, sl, tp, "ML class sell");
+      if(ok)
          g_bars_in_trade = 0;
+      else if(InpLog)
+         PrintFormat("SELL failed. retcode=%d lastError=%d bid=%.5f sl=%.5f tp=%.5f",
+                     trade.ResultRetcode(), GetLastError(), bid, sl, tp);
      }
   }
 
