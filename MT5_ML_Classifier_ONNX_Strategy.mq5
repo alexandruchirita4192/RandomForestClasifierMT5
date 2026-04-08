@@ -23,10 +23,10 @@ input bool   InpAllowShort            = true;      // InpAllowShort: Permite SEL
 
 input bool   InpUseTrendFilter        = true;      // InpUseTrendFilter: Activeaza filtru de trend
 input ENUM_TIMEFRAMES InpTrendTF      = PERIOD_H1; // InpTrendTF: Timeframe trend
-input int    InpTrendMAPeriod         = 50;        // InpTrendMAPeriod: EMA period
+input int    InpTrendMAPeriod         = 100;        // InpTrendMAPeriod: EMA period
 input bool   InpTrendRequireSlope     = true;      // InpTrendRequireSlope: EMA trebuie sa aiba si panta in directia semnalului
 
-input bool   InpUseKillSwitch                 = true;  // InpUseKillSwitch: Activeaza kill switch
+input bool   InpUseKillSwitch                 = false;  // InpUseKillSwitch: Activeaza kill switch
 input int    InpKillSwitchLookbackTrades      = 8;     // InpKillSwitchLookbackTrades: Ultimele N trade-uri analizate
 input double InpKillSwitchMinWinRate          = 0.40;  // InpKillSwitchMinWinRate: Win rate minim acceptat
 input double InpKillSwitchMinProfitFactor     = 0.95;  // InpKillSwitchMinProfitFactor: Profit factor minim acceptat
