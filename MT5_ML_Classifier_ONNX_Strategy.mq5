@@ -38,13 +38,13 @@ input long   InpMagic                 = 26042026;  // InpMagic: Magic number
 input bool   InpLog                   = false;     // InpLog: Log principal
 input bool   InpDebugLog              = false;     // InpDebugLog: Log la fiecare bara noua
 
-input bool   InpUseTrendDistanceFilter = true;   // InpUseTrendDistanceFilter: Cere distanta minima fata de EMA HTF
+input bool   InpUseTrendDistanceFilter = false;   // InpUseTrendDistanceFilter: Cere distanta minima fata de EMA HTF
 input double InpTrendMinDistancePct    = 0.0010; // InpTrendMinDistancePct: Distanta minima fata de EMA (ex: 0.001 = 0.1%)
 
 input bool   InpUseAtrVolFilter        = true;   // InpUseAtrVolFilter: Activeaza filtru ATR
 input int    InpAtrVolLookback         = 50;     // InpAtrVolLookback: Numar bare pentru distributia ATR
-input double InpAtrMinPercentile       = 0.20;   // InpAtrMinPercentile: Prag minim ATR din distributie (0..1)
-input double InpAtrMaxPercentile       = 0.90;   // InpAtrMaxPercentile: Prag maxim ATR din distributie (0..1)
+input double InpAtrMinPercentile       = 0.25;   // InpAtrMinPercentile: Prag minim ATR din distributie (0..1)
+input double InpAtrMaxPercentile       = 0.85;   // InpAtrMaxPercentile: Prag maxim ATR din distributie (0..1)
 
 const int FEATURE_COUNT = 10;
 const int CLASS_COUNT   = 3; // ordinea claselor: SELL, FLAT, BUY
