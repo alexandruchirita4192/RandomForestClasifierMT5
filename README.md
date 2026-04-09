@@ -1,33 +1,33 @@
 # MT5 ML Classifier v2
 
-Pachetul contine o varianta refacuta a exemplului initial:
+The package contains a refactored version of the initial example:
 
-- target pe **mai multe bare** (`--horizon-bars`, recomandat 4..12)
-- **clasificare** in 3 clase: `SELL`, `FLAT`, `BUY`
-- **train/test separat nativ** in scriptul Python
-- praguri pentru EA **derivate din predictiile modelului pe train**
-- export ONNX pentru rulare in MT5 Strategy Tester
+- target on **multiple bars** (`--horizon-bars`, recommended 4..12)
+- **classification** into 3 classes: `SELL`, `FLAT`, `BUY`
+- **native train/test split** in the Python script
+- thresholds for EA **derived from model predictions on train**
+- ONNX export for running in MT5 Strategy Tester
 
-## Fisiere
+## Files
 
 - `train_mt5_ml_classifier.py`
 - `MT5_ML_Classifier_ONNX_Strategy.mq5`
 
-## Instalare pachete Python
+## Python packages installation
 
 ```powershell
 pip install MetaTrader5 pandas numpy scikit-learn skl2onnx onnx
 ```
 
-## Rulare recomandata
+## Recommended run
 
-Exemplu pentru XAGUSD, M15, 20000 bare, orizont 8 bare:
+Example for XAGUSD, M15, 20000 bars, horizon 8 bars:
 
 ```powershell
 python train_mt5_ml_classifier.py --symbol XAGUSD --timeframe M15 --bars 20000 --horizon-bars 8 --train-ratio 0.70 --output-dir output_v2_xagusd_m15_h8
 ```
 
-Dupa rulare, in directorul de output vei avea:
+After running, in the output directory you will have:
 
 - `ml_strategy_classifier.onnx`
 - `model_metadata.json`
@@ -35,20 +35,20 @@ Dupa rulare, in directorul de output vei avea:
 - `train_predictions.csv`
 - `test_predictions.csv`
 
-## Cum rulezi in MT5
+## How to run in MT5
 
-1. Copiezi `ml_strategy_classifier.onnx` langa `MT5_ML_Classifier_ONNX_Strategy.mq5`
-2. Recompilezi EA-ul in MetaEditor
-3. Deschizi `run_in_mt5.txt`
-4. In Strategy Tester setezi exact fereastra `TEST UTC`
-5. In inputurile EA folosesti valorile recomandate pentru:
+1. Copy `ml_strategy_classifier.onnx` next to `MT5_ML_Classifier_ONNX_Strategy.mq5`
+2. Recompile the EA in MetaEditor
+3. Open `run_in_mt5.txt`
+4. In Strategy Tester set exactly the `TEST UTC` window
+5. In the EA inputs use the recommended values for:
    - `InpEntryProbThreshold`
    - `InpMinProbGap`
    - `InpMaxBarsInTrade`
 
-## Ce sa compari
+## What to compare
 
-Merita sa compari cel putin 3 variante:
+It is worth comparing at least 3 variants:
 
 ```powershell
 python train_mt5_ml_classifier.py --symbol XAGUSD --timeframe M15 --bars 20000 --horizon-bars 4  --train-ratio 0.70 --output-dir output_v2_h4
@@ -56,4 +56,4 @@ python train_mt5_ml_classifier.py --symbol XAGUSD --timeframe M15 --bars 20000 -
 python train_mt5_ml_classifier.py --symbol XAGUSD --timeframe M15 --bars 20000 --horizon-bars 12 --train-ratio 0.70 --output-dir output_v2_h12
 ```
 
-Apoi backtest in MT5 doar pe ferestrele de test corespunzatoare.
+Then backtest in MT5 only on the corresponding test windows.
