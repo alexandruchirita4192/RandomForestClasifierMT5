@@ -1,6 +1,6 @@
 #property strict
 #property version   "2.20"
-#property description "EA MT5: ML classifier trained in Python, exported to ONNX, run in Strategy Tester"
+#property description "EA MT5: Random Forest classifier trained in Python, exported to ONNX, run in Strategy Tester"
 #property description "With trend filter + kill switch"
 
 #include <Trade/Trade.mqh>

@@ -447,7 +447,7 @@ STEPS TO RUN IN MT5:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Train an ML classifier for MT5 and export it to ONNX.")
+    p = argparse.ArgumentParser(description="Train an Random Forest classifier for MT5 and export it to ONNX.")
     p.add_argument("--symbol", default="XAGUSD", help="Symbol used for training")
     p.add_argument("--timeframe", default="M15", help="M1/M5/M15/M30/H1/H4/D1")
     p.add_argument("--bars", type=int, default=20000, help="Number of bars to read from MT5")
